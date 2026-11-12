@@ -25,13 +25,31 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "life_inbox.
 DEFAULT_DATABASE_URL = f"sqlite:///{DEFAULT_DB_PATH}"
 
 
+def _drop_query_param(url: str, key: str) -> str:
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    parts = urlsplit(url)
+    kept = [
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if k != key
+    ]
+    return urlunsplit(parts._replace(query=urlencode(kept)))
+
+
 def _normalize_database_url(url: str) -> str:
     """Accept the `postgres://` / `postgresql://` URLs that hosts like Neon and
     Vercel hand out and point SQLAlchemy at the psycopg (v3) driver. SQLite URLs
     pass through unchanged, so local development is untouched."""
     for prefix in ("postgresql://", "postgres://"):
         if url.startswith(prefix):
-            return "postgresql+psycopg://" + url[len(prefix):]
+            url = "postgresql+psycopg://" + url[len(prefix):]
+            break
+    if url.startswith("postgresql+psycopg://"):
+        # Neon's POOLED endpoint (PgBouncer) can reject SCRAM channel binding,
+        # which makes psycopg fail auth with channel_binding=require. TLS is
+        # still enforced by sslmode=require, so drop only this parameter.
+        url = _drop_query_param(url, "channel_binding")
     return url
 
 

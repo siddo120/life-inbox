@@ -66,7 +66,13 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Life Inbox")
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 
-init_db()
+try:
+    # Create any missing tables. Guarded so a transient DB issue during a
+    # serverless cold start doesn't crash the whole function at import time;
+    # the error is logged and tables are (re)created on a later cold start.
+    init_db()
+except Exception:
+    logger.exception("init_db() failed at startup; continuing")
 
 
 @app.get("/api/health")
