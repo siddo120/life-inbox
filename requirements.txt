@@ -4,8 +4,12 @@ uvicorn
 pydantic
 sqlalchemy
 alembic
+psycopg[binary]
 openai
 python-dotenv
 requests
+google-auth
+google-auth-oauthlib
+google-api-python-client
 pytest
 httpx

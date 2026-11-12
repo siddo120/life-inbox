@@ -1,0 +1,11 @@
+# Keep the serverless bundle small — none of this is needed at runtime.
+.venv/
+data/
+tests/
+scripts/
+migrations/
+.pytest_cache/
+reference/
+*.md
+.env
+.env.example

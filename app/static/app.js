@@ -147,6 +147,9 @@ async function fetchJson(url, options, friendlyError) {
 
 let recognition = null;
 let isListening = false;
+// True once speech has filled the box, so organize can de-garble the transcript.
+// Cleared the moment the user types (they've reviewed/edited it themselves).
+let voiceUsed = false;
 
 function setMicState(listening) {
   const btn = document.getElementById('micButton');
@@ -188,6 +191,7 @@ function toggleVoiceCapture() {
       const transcript = event.results[i][0].transcript;
       if (event.results[i].isFinal) {
         finalText += transcript + ' ';
+        voiceUsed = true;  // spoken text present → clean it up before parsing
       } else {
         interim += transcript;
       }
@@ -693,7 +697,22 @@ function dayTasksFor(dateIso) {
   for (const t of lastTasks) {
     if (t.status === 'dismissed') continue;
     if (t.task_type === 'recurring') {
-      out.push(t);
+      // A recurring task runs from the day it was created until its deadline.
+      // No deadline = an open-ended habit that repeats forever. With a deadline
+      // (e.g. an exam/submission), it's PREP that runs up to the day BEFORE the
+      // deadline; on the deadline day itself it becomes the event (the exam /
+      // submission), not another study day; past the deadline it disappears.
+      const startIso = t.created_at ? localIso(new Date(t.created_at)) : null;
+      const afterStart = !startIso || dateIso >= startIso;
+      if (!afterStart) continue;
+      if (!t.due_date) {
+        out.push(t);                                   // open-ended habit
+      } else if (dateIso < t.due_date) {
+        out.push(t);                                   // a prep day
+      } else if (dateIso === t.due_date) {
+        out.push({...t, _deadlineEvent: true});        // the deadline itself
+      }
+      // after due_date: it's over, show nothing
     } else if (t.due_date === dateIso) {
       out.push(t);
     } else if (dateIso === todayIso && t.status === 'open' && !t.due_date) {
@@ -764,7 +783,34 @@ function meetingJoinHtml(task) {
   return `<a class="join-link" href="${esc(clean)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
 }
 
+function deadlineEventTitle(text) {
+  // "Study for Tarun's submission" -> "Tarun's submission"; the deadline day
+  // shows the deliverable itself, not the prep. Falls back to the full text.
+  const t = (text || '').trim();
+  const m = t.match(
+    /^(?:study(?:ing)?|prepare|preparing|prep|revise|revising|practice|practise|work|working)\s+(?:for\s+|on\s+)?(.+)$/i
+  );
+  if (m && m[1] && m[1].trim()) {
+    const s = m[1].trim();
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+  return t;
+}
+
 function renderDayTaskHtml(task) {
+  if (task._deadlineEvent) {
+    // The deadline day: the recurring prep task becomes the event itself.
+    const title = deadlineEventTitle(task.text);
+    const star = task.importance === 'high' ? ' <span class="star">★</span>' : '';
+    const effort = task.effort_min ? `<span class="task-effort">${task.effort_min}m</span>` : '';
+    return `<div class="task-row task-event" data-task-id="${task.id}">
+      <div class="task-row-main">
+        <span class="task-row-text">${esc(title)}${star} <span class="event-tag">due today</span></span>
+      </div>
+      <div class="task-row-meta"><span class="task-sched">📌 ${esc(formatDueDate(task.due_date))}</span>${effort}</div>
+      ${taskHoverActionsHtml(task.id)}
+    </div>`;
+  }
   const doneClass = task.status === 'completed' ? ' task-row-done' : '';
   const sched = task.task_type === 'recurring'
     ? `🔁 ${task.recurrence || 'recurring'}`
@@ -1118,8 +1164,7 @@ async function saveTaskEdit() {
 async function analyzeInbox() {
   if (isAnalyzingInbox) return;
   isAnalyzingInbox = true;
-  const thinking = document.getElementById('thinking');
-  if (thinking) thinking.hidden = false;
+  startAnalyzing();
   try {
     await fetchJson('/api/analyze', {method: 'POST'}, 'Unable to analyze inbox.');
     await loadTasks();
@@ -1131,36 +1176,96 @@ async function analyzeInbox() {
     );
   } finally {
     isAnalyzingInbox = false;
-    if (thinking) thinking.hidden = true;
+    stopAnalyzing();
   }
 }
 
 // One-tap flow: save the thought, organize it, and show where it landed.
+let isCapturing = false;
+let lastCapture = {text: '', at: 0};
+
 async function captureAndOrganize() {
   const text = document.getElementById('noteText').value.trim();
   if (!text) {
     setStatus('noteStatus', 'Enter a thought first — or press 🎤 Speak.', true);
     return;
   }
+  // Double-submit guard: ignore a second trigger while one is in flight, and
+  // swallow an identical note re-sent within 10s (rapid double-tap or voice+click).
+  if (isCapturing) return;
+  if (text === lastCapture.text && Date.now() - lastCapture.at < 10000) {
+    setStatus('noteStatus', 'Already added that one just now.');
+    document.getElementById('noteText').value = '';
+    return;
+  }
+  isCapturing = true;
+  lastCapture = {text, at: Date.now()};
+  try {
+    await runCapture(text);
+  } finally {
+    isCapturing = false;
+  }
+}
+
+const ANALYZING_MESSAGES = [
+  'Reading your thoughts',
+  'Analyzing and prioritizing for you',
+  'Sorting into P0 · P1 · P2',
+  'Almost there',
+];
+let analyzingTimer = null;
+
+function startAnalyzing() {
+  const panel = document.getElementById('thinking');
+  const msg = document.getElementById('analyzingMsg');
+  if (!panel) return;
+  panel.hidden = false;
+  if (!msg) return;
+  let i = 0;
+  msg.classList.remove('fade');
+  msg.textContent = ANALYZING_MESSAGES[0];
+  clearInterval(analyzingTimer);
+  analyzingTimer = setInterval(() => {
+    msg.classList.add('fade');               // fade out
+    setTimeout(() => {
+      i = (i + 1) % ANALYZING_MESSAGES.length;
+      msg.textContent = ANALYZING_MESSAGES[i];
+      msg.classList.remove('fade');          // fade back in
+    }, 250);
+  }, 1500);
+}
+
+function stopAnalyzing() {
+  clearInterval(analyzingTimer);
+  analyzingTimer = null;
+  const panel = document.getElementById('thinking');
+  if (panel) panel.hidden = true;
+}
+
+async function runCapture(text) {
+  // Capture whether this note came from speech BEFORE addNote clears state, so
+  // the organize step can de-garble a raw transcript.
+  const wasVoice = voiceUsed;
+  voiceUsed = false;
   const item = await addNote();  // saves + clears the box, returns the item
   if (!item || document.getElementById('noteText').value.trim()) return;
 
   // Fast path: analyze ONLY this new note (not the whole inbox).
-  const thinking = document.getElementById('thinking');
-  if (thinking) thinking.hidden = false;
+  startAnalyzing();
   let created = [];
   try {
     created = await fetchJson(
-      `/api/items/${item.id}/organize`,
+      `/api/items/${item.id}/organize${wasVoice ? '?source=voice' : ''}`,
       {method: 'POST'},
       'Unable to organize this note.'
     ) || [];
+    if (wasVoice) await loadNotes();  // show the cleaned-up note text
     await loadTasks();
   } catch {
     setStatus('noteStatus', 'Saved, but could not organize it. Try again.', true);
     return;
   } finally {
-    if (thinking) thinking.hidden = true;
+    stopAnalyzing();
   }
   if (!created.length) {
     setStatus('noteStatus', 'Saved to your inbox.');
@@ -1250,8 +1355,95 @@ function restoreDayBudget() {
   } catch (e) { /* ignore */ }
 }
 
+// --- Gmail inbound sync -----------------------------------------------------
+
+let gmailConnected = false;
+
+function setGmailButton(connected) {
+  gmailConnected = connected;
+  const btn = document.getElementById('gmailButton');
+  if (!btn) return;
+  btn.textContent = connected ? 'Sync Gmail' : 'Connect Gmail';
+  btn.title = connected
+    ? 'Pull recent emails and turn them into tasks'
+    : 'Connect your Gmail (read-only) to turn emails into tasks';
+}
+
+async function refreshGmailStatus() {
+  try {
+    const status = await fetchJson('/api/gmail/status', undefined, '');
+    setGmailButton(Boolean(status && status.connected));
+  } catch {
+    setGmailButton(false);
+  }
+}
+
+function gmailAction() {
+  if (gmailConnected) {
+    syncGmail();
+  } else {
+    // Hand off to Google's consent screen; the callback returns us to "/".
+    window.location.href = '/api/gmail/auth';
+  }
+}
+
+async function syncGmail() {
+  setButtonBusy('gmailButton', true, 'Syncing…', 'Sync Gmail');
+  setStatus('noteStatus', 'Checking your inbox…');
+  try {
+    const result = await fetchJson(
+      '/api/gmail/sync',
+      {method: 'POST'},
+      'Unable to sync Gmail.'
+    );
+    const created = (result && result.created_tasks) || [];
+    const newEmails = (result && result.new_emails) || 0;
+    if (!newEmails) {
+      setStatus('noteStatus', 'No new emails to turn into tasks.');
+    } else {
+      const n = created.length;
+      setStatus(
+        'noteStatus',
+        `Pulled ${newEmails} new email${newEmails === 1 ? '' : 's'} → ` +
+        `${n} actionable${n === 1 ? '' : 's'} added.`
+      );
+    }
+    await loadNotes();
+    await loadTasks();
+  } catch {
+    setStatus('noteStatus', 'Could not sync Gmail. Please try again.', true);
+  } finally {
+    setButtonBusy('gmailButton', false, 'Syncing…', 'Sync Gmail');
+  }
+}
+
+function handleGmailReturn() {
+  const params = new URLSearchParams(window.location.search);
+  const flag = params.get('gmail');
+  if (!flag) return;
+  if (flag === 'connected') {
+    setStatus('noteStatus', 'Gmail connected. Click “Sync Gmail” to pull your emails.');
+  } else if (flag === 'error') {
+    setStatus('noteStatus', 'Gmail connection was cancelled or failed.', true);
+  }
+  // Clean the flag out of the URL so a refresh doesn't repeat the message.
+  params.delete('gmail');
+  const qs = params.toString();
+  window.history.replaceState(
+    {}, '', window.location.pathname + (qs ? `?${qs}` : '')
+  );
+}
+
+// Manual typing means the user reviewed/edited the text themselves, so don't
+// treat it as a raw transcript. (Speech sets textarea.value programmatically,
+// which does NOT fire 'input', so this only resets on real keystrokes.)
+document.getElementById('noteText')
+  ?.addEventListener('input', () => { voiceUsed = false; });
+
 syncControlsFromUrl();
 restoreDayBudget();
+handleGmailReturn();
+refreshGmailStatus();
 updateDayLabel();
 loadNotes();
 loadTasks();
