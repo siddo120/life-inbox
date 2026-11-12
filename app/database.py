@@ -1,7 +1,7 @@
 import hashlib
 import json
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -23,7 +23,21 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "life_inbox.db"
 DEFAULT_DATABASE_URL = f"sqlite:///{DEFAULT_DB_PATH}"
-DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
+
+
+def _normalize_database_url(url: str) -> str:
+    """Accept the `postgres://` / `postgresql://` URLs that hosts like Neon and
+    Vercel hand out and point SQLAlchemy at the psycopg (v3) driver. SQLite URLs
+    pass through unchanged, so local development is untouched."""
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
+
+DATABASE_URL = _normalize_database_url(
+    os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
+)
 
 
 def _connect_args(database_url: str) -> dict:
@@ -32,7 +46,16 @@ def _connect_args(database_url: str) -> dict:
     return {}
 
 
-engine = create_engine(DATABASE_URL, connect_args=_connect_args(DATABASE_URL))
+def _engine_kwargs(database_url: str) -> dict:
+    kwargs = {"connect_args": _connect_args(database_url)}
+    if not database_url.startswith("sqlite"):
+        # On serverless (one process per invocation) a live-checked connection
+        # avoids reusing one the platform already closed.
+        kwargs["pool_pre_ping"] = True
+    return kwargs
+
+
+engine = create_engine(DATABASE_URL, **_engine_kwargs(DATABASE_URL))
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 Base = declarative_base()
 
@@ -188,12 +211,38 @@ def _item_to_dict(item: InboxItemRecord) -> dict:
     }
 
 
+# A re-submitted thought captured within this window reuses the existing note
+# instead of creating a second one (and a second set of tasks). It's wide enough
+# to catch "did that work? *click again*" retries and a reload-then-resubmit, but
+# short enough that genuinely re-adding the same errand later still works.
+DUPLICATE_WINDOW = timedelta(minutes=10)
+
+
 def add_item_to_db(raw_text: str) -> dict:
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    normalized = (raw_text or "").strip()
     with SessionLocal() as session:
+        # Content-level dedup: an identical text note captured in the recent
+        # window returns the SAME item, so organizing it just refreshes that
+        # note's tasks in place rather than duplicating them.
+        if normalized:
+            cutoff = (now_dt - DUPLICATE_WINDOW).isoformat()
+            existing = session.scalars(
+                select(InboxItemRecord)
+                .where(
+                    InboxItemRecord.item_type == TEXT_ITEM_TYPE,
+                    InboxItemRecord.raw_text == normalized,
+                    InboxItemRecord.created_at >= cutoff,
+                )
+                .order_by(InboxItemRecord.id.desc())
+            ).first()
+            if existing is not None:
+                return _item_to_dict(existing)
+
         item = InboxItemRecord(
             item_type=TEXT_ITEM_TYPE,
-            raw_text=raw_text,
+            raw_text=normalized,
             processing_status=READY_STATUS,
             created_at=now,
         )

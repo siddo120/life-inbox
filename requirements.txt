@@ -4,6 +4,7 @@ uvicorn
 pydantic
 sqlalchemy
 alembic
+psycopg[binary]
 openai
 python-dotenv
 requests
