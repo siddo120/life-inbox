@@ -1209,37 +1209,62 @@ async function captureAndOrganize() {
 
 const ANALYZING_MESSAGES = [
   'Reading your thoughts',
-  'Analyzing and prioritizing for you',
+  'Pulling out each task',
+  'Working out the dates',
   'Sorting into P0 · P1 · P2',
+  'Laying out your day',
   'Almost there',
 ];
 let analyzingTimer = null;
+let analyzingShownAt = 0;
+const MIN_THINKING_MS = 900;  // let the moment register — never a flash
 
 function startAnalyzing() {
-  const panel = document.getElementById('thinking');
-  const msg = document.getElementById('analyzingMsg');
-  if (!panel) return;
-  panel.hidden = false;
-  if (!msg) return;
+  analyzingShownAt = Date.now();
+  // Primary panel: in-place overlay on the capture card, in the user's eyeline.
+  const capture = document.querySelector('.capture');
+  const overlay = document.getElementById('captureThinking');
+  const panel = document.getElementById('thinking');   // secondary, in the day view
+  const msgNodes = [
+    document.getElementById('captureThinkingMsg'),
+    document.getElementById('analyzingMsg'),
+  ].filter(Boolean);
+  if (capture) capture.classList.add('is-thinking');
+  if (overlay) overlay.hidden = false;
+  if (panel) panel.hidden = false;
+
   let i = 0;
-  msg.classList.remove('fade');
-  msg.textContent = ANALYZING_MESSAGES[0];
+  msgNodes.forEach(n => { n.classList.remove('fade'); n.textContent = ANALYZING_MESSAGES[0]; });
   clearInterval(analyzingTimer);
   analyzingTimer = setInterval(() => {
-    msg.classList.add('fade');               // fade out
+    msgNodes.forEach(n => n.classList.add('fade'));          // fade out
     setTimeout(() => {
       i = (i + 1) % ANALYZING_MESSAGES.length;
-      msg.textContent = ANALYZING_MESSAGES[i];
-      msg.classList.remove('fade');          // fade back in
+      msgNodes.forEach(n => {
+        n.textContent = ANALYZING_MESSAGES[i];
+        n.classList.remove('fade');                          // fade back in
+      });
     }, 250);
-  }, 1500);
+  }, 1400);
 }
 
-function stopAnalyzing() {
+function hideThinking() {
   clearInterval(analyzingTimer);
   analyzingTimer = null;
+  const capture = document.querySelector('.capture');
+  const overlay = document.getElementById('captureThinking');
   const panel = document.getElementById('thinking');
+  if (capture) capture.classList.remove('is-thinking');
+  if (overlay) overlay.hidden = true;
   if (panel) panel.hidden = true;
+}
+
+// Honour a minimum visible time so a fast response doesn't flash the panel.
+function stopAnalyzing() {
+  const elapsed = Date.now() - analyzingShownAt;
+  const wait = Math.max(0, MIN_THINKING_MS - elapsed);
+  clearTimeout(stopAnalyzing._t);
+  stopAnalyzing._t = setTimeout(hideThinking, wait);
 }
 
 async function runCapture(text) {
@@ -1247,11 +1272,16 @@ async function runCapture(text) {
   // the organize step can de-garble a raw transcript.
   const wasVoice = voiceUsed;
   voiceUsed = false;
+  // Begin the "thinking" moment the instant the user commits — it covers the
+  // save round-trip too, so the click never lands on a dead, silent screen.
+  startAnalyzing();
   const item = await addNote();  // saves + clears the box, returns the item
-  if (!item || document.getElementById('noteText').value.trim()) return;
+  if (!item || document.getElementById('noteText').value.trim()) {
+    hideThinking();
+    return;
+  }
 
   // Fast path: analyze ONLY this new note (not the whole inbox).
-  startAnalyzing();
   let created = [];
   try {
     created = await fetchJson(
