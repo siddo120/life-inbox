@@ -90,6 +90,21 @@ def test_create_and_list_canonical_text_item(client):
     assert client.get("/api/items").json() == [item]
 
 
+def test_resubmitting_identical_note_reuses_the_same_item(client):
+    """A re-submitted identical thought must not spawn a second item (and so a
+    second set of tasks). It reuses the existing note within the dedup window."""
+    first = client.post("/api/items", json={"raw_text": "Water the plants"})
+    second = client.post("/api/items", json={"raw_text": "  Water the plants  "})
+
+    assert first.status_code == 200 and second.status_code == 200
+    assert second.json()["id"] == first.json()["id"]
+    # Only one item exists; a genuinely different note still creates its own.
+    assert len(client.get("/api/items").json()) == 1
+    other = client.post("/api/items", json={"raw_text": "Buy groceries"})
+    assert other.json()["id"] != first.json()["id"]
+    assert len(client.get("/api/items").json()) == 2
+
+
 def test_item_search_is_case_insensitive_for_raw_text_and_title(client):
     text_match = client.post(
         "/api/items",

@@ -98,9 +98,38 @@ h1 { margin-bottom: 4px; font-family: "Fraunces", Georgia, serif; font-size: 34p
   100% { transform: translateX(360%); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .analyzing, .analyzing .orb::before, .analyzing-bar::after, .analyzing .dots.animate i {
+  .analyzing, .analyzing .orb::before, .analyzing-bar::after, .analyzing .dots.animate i,
+  .capture-thinking, .capture-thinking .orb::before, .capture.is-thinking > *:not(.capture-thinking) {
     animation: none;
   }
+}
+
+/* In-place "thinking" moment layered over the capture card — keeps the
+   transition in the user's eyeline right where they clicked. */
+.capture-thinking {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 20px; text-align: center;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+  border-radius: var(--radius);
+  animation: analyzing-in 0.4s cubic-bezier(.2,.7,.3,1) both;
+}
+.capture-thinking[hidden] { display: none; }
+.capture-thinking .orb {
+  position: relative; width: 58px; height: 58px;
+  display: grid; place-items: center;
+}
+.capture-thinking .orb::before {
+  content: ""; position: absolute; inset: -4px; border-radius: 50%;
+  background: radial-gradient(circle at center, rgba(193,95,60,0.22), transparent 68%);
+  animation: orb-pulse 1.9s ease-in-out infinite;
+}
+.capture-thinking .dots i { width: 9px; height: 9px; }
+/* Soften the form behind the overlay so the eye settles on the animation. */
+.capture.is-thinking > *:not(.capture-thinking) {
+  transition: opacity 0.3s ease, filter 0.3s ease;
+  opacity: 0.35; filter: blur(1px); pointer-events: none;
 }
 h2 { font-weight: 600; letter-spacing: -0.01em; }
 h3 { margin-bottom: 8px; font-size: 15px; font-weight: 600; }
@@ -158,7 +187,7 @@ textarea:focus, input:focus, select:focus {
 
 /* Layout */
 .app-header { margin-bottom: 20px; }
-.capture { padding: 16px; margin-bottom: 20px; }
+.capture { padding: 16px; margin-bottom: 20px; position: relative; }
 .capture-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 .upload-inline { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 13px; color: var(--muted); }
 .layout { display: grid; grid-template-columns: 1fr 320px; gap: 24px; align-items: start; }
