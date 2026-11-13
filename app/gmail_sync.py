@@ -37,16 +37,23 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
-# Where the user's OAuth token is cached (gitignored).
-TOKEN_PATH = Path(
-    os.getenv("GMAIL_TOKEN_FILE", str(_DATA_DIR / "gmail_token.json"))
-)
-# The OAuth client secret downloaded from Google Cloud (gitignored).
+# The OAuth client secret downloaded from Google Cloud. In production
+# (serverless, read-only filesystem) it is supplied as the full JSON string in
+# the GOOGLE_CLIENT_SECRET_JSON env var; locally it can still be a gitignored
+# file.
 CLIENT_SECRET_PATH = Path(
     os.getenv(
         "GOOGLE_CLIENT_SECRET_FILE",
         str(_DATA_DIR / "gmail_client_secret.json"),
     )
+)
+
+# The user's OAuth token is stored in the database (key/value settings table)
+# under this key, so it survives serverless cold starts where no local file can
+# be written. Legacy file path kept only to migrate an existing local token.
+GMAIL_TOKEN_SETTING = "gmail_token"
+_LEGACY_TOKEN_PATH = Path(
+    os.getenv("GMAIL_TOKEN_FILE", str(_DATA_DIR / "gmail_token.json"))
 )
 
 # How many recent inbox messages a single sync pulls by default.
@@ -64,24 +71,43 @@ class GmailNotConnected(Exception):
 # --- OAuth ------------------------------------------------------------------
 
 
+def _client_config_from_env() -> Optional[dict]:
+    """Parse the OAuth client config from GOOGLE_CLIENT_SECRET_JSON, if set."""
+    raw = os.getenv("GOOGLE_CLIENT_SECRET_JSON", "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error("GOOGLE_CLIENT_SECRET_JSON is set but is not valid JSON")
+        return None
+
+
 def client_secret_configured() -> bool:
-    return CLIENT_SECRET_PATH.exists()
+    return _client_config_from_env() is not None or CLIENT_SECRET_PATH.exists()
 
 
 def _build_flow(redirect_uri: str):
-    """Build an OAuth flow from the downloaded client-secret file."""
-    if not client_secret_configured():
-        raise GmailNotConfigured(
-            "Gmail client secret is not configured. Add the OAuth client "
-            f"secret JSON at {CLIENT_SECRET_PATH}."
-        )
+    """Build an OAuth flow from the env client config, or the local file."""
     from google_auth_oauthlib.flow import Flow
 
-    flow = Flow.from_client_secrets_file(
-        str(CLIENT_SECRET_PATH),
-        scopes=SCOPES,
-        redirect_uri=redirect_uri,
-    )
+    config = _client_config_from_env()
+    if config is not None:
+        flow = Flow.from_client_config(
+            config, scopes=SCOPES, redirect_uri=redirect_uri
+        )
+    elif CLIENT_SECRET_PATH.exists():
+        flow = Flow.from_client_secrets_file(
+            str(CLIENT_SECRET_PATH),
+            scopes=SCOPES,
+            redirect_uri=redirect_uri,
+        )
+    else:
+        raise GmailNotConfigured(
+            "Gmail client secret is not configured. Set "
+            "GOOGLE_CLIENT_SECRET_JSON or add the OAuth client secret JSON at "
+            f"{CLIENT_SECRET_PATH}."
+        )
     # We build a fresh Flow for the auth step and again for the token exchange
     # (two separate HTTP requests), so a PKCE code_verifier generated during
     # authorization would be lost by exchange time ("Missing code verifier").
@@ -112,18 +138,30 @@ def exchange_code(redirect_uri: str, code: str) -> None:
 
 
 def _save_credentials(creds) -> None:
-    TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
-    try:
-        os.chmod(TOKEN_PATH, 0o600)
-    except OSError:
-        pass
+    database.set_setting(GMAIL_TOKEN_SETTING, creds.to_json())
+
+
+def _stored_token_json() -> Optional[str]:
+    """Return the stored token JSON from the DB, migrating a legacy local file
+    the first time if one exists and the DB has none yet."""
+    raw = database.get_setting(GMAIL_TOKEN_SETTING)
+    if raw:
+        return raw
+    if _LEGACY_TOKEN_PATH.exists():
+        try:
+            raw = _LEGACY_TOKEN_PATH.read_text(encoding="utf-8")
+            database.set_setting(GMAIL_TOKEN_SETTING, raw)
+            return raw
+        except OSError:
+            return None
+    return None
 
 
 def load_credentials():
     """Load cached credentials, refreshing them if needed. Returns None if
     there is no usable token."""
-    if not TOKEN_PATH.exists():
+    raw = _stored_token_json()
+    if not raw:
         return None
 
     from google.auth.transport.requests import Request
@@ -131,7 +169,7 @@ def load_credentials():
 
     try:
         creds = Credentials.from_authorized_user_info(
-            json.loads(TOKEN_PATH.read_text(encoding="utf-8")),
+            json.loads(raw),
             SCOPES,
         )
     except (ValueError, json.JSONDecodeError):

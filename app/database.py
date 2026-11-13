@@ -209,6 +209,46 @@ class TaskProgressRecord(Base):
     updated_at = Column(Text, nullable=False)
 
 
+class AppSettingRecord(Base):
+    """Simple key/value store for small bits of app state that must persist
+    across requests and serverless cold starts (e.g. the Gmail OAuth token),
+    where a local file can't be used because the filesystem is read-only."""
+
+    __tablename__ = "app_settings"
+
+    key = Column(Text, primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(Text, nullable=False)
+
+
+def get_setting(key: str) -> Optional[str]:
+    with SessionLocal() as session:
+        row = session.get(AppSettingRecord, key)
+        return row.value if row else None
+
+
+def set_setting(key: str, value: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with SessionLocal() as session:
+        row = session.get(AppSettingRecord, key)
+        if row is None:
+            session.add(
+                AppSettingRecord(key=key, value=value, updated_at=now)
+            )
+        else:
+            row.value = value
+            row.updated_at = now
+        session.commit()
+
+
+def delete_setting(key: str) -> None:
+    with SessionLocal() as session:
+        row = session.get(AppSettingRecord, key)
+        if row is not None:
+            session.delete(row)
+            session.commit()
+
+
 def init_db():
     """Create missing tables without running or applying Alembic migrations."""
     Base.metadata.create_all(bind=engine)
@@ -882,6 +922,12 @@ def update_task_in_db(task_id: int, fields: dict) -> Optional[dict]:
         for key, value in fields.items()
         if key in _EDITABLE_TASK_FIELDS
     }
+    # Moving a task between P0/P1/P2 (via the edit dropdown or drag-and-drop)
+    # must also update the legacy High/Medium/Low priority column that the
+    # check-constraint and older code rely on, so the two never drift apart.
+    new_bucket = updates.get("bucket")
+    if new_bucket in _BUCKET_TO_PRIORITY:
+        updates["priority"] = _BUCKET_TO_PRIORITY[new_bucket]
     with SessionLocal() as session:
         task = session.get(TaskRecord, task_id)
         if task is None:

@@ -744,16 +744,95 @@ function renderDay() {
 
   const sections = ['P0', 'P1', 'P2'].map(bucket => {
     const inBucket = tasks.filter(t => (t.bucket || 'P2') === bucket);
-    if (!inBucket.length) return '';
+    // Render every bucket (even empty ones) so each is a drop target you can
+    // drag a task into.
+    const body = inBucket.length
+      ? inBucket.map(renderDayTaskHtml).join('')
+      : '<div class="bucket-empty">Drop a task here</div>';
     return `
-      <div class="bucket-section bucket-${bucket}">
+      <div class="bucket-section bucket-${bucket}" data-bucket="${bucket}">
         <h3 class="bucket-head">${esc(BUCKET_LABELS[bucket])} <span class="muted">(${inBucket.length})</span></h3>
-        ${inBucket.map(renderDayTaskHtml).join('')}
+        ${body}
       </div>
     `;
   }).join('');
 
   root.innerHTML = sections;
+  wireDayDragAndDrop(root);
+}
+
+// --- Drag-and-drop: move a task between P0/P1/P2 buckets --------------------
+
+function wireDayDragAndDrop(root) {
+  if (root.dataset.dndWired) return;   // delegated listeners survive innerHTML
+  root.dataset.dndWired = '1';
+
+  root.addEventListener('dragstart', (e) => {
+    const row = e.target.closest('.task-row, .task-event');
+    if (!row) return;
+    const id = row.getAttribute('data-task-id');
+    if (!id) return;
+    e.dataTransfer.setData('text/plain', id);
+    e.dataTransfer.effectAllowed = 'move';
+    row.classList.add('dragging');
+  });
+
+  root.addEventListener('dragend', () => {
+    root.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
+    root.querySelectorAll('.drop-hover').forEach(el => el.classList.remove('drop-hover'));
+  });
+
+  root.addEventListener('dragover', (e) => {
+    const section = e.target.closest('.bucket-section');
+    if (!section) return;
+    e.preventDefault();                // allow drop
+    e.dataTransfer.dropEffect = 'move';
+    if (!section.classList.contains('drop-hover')) {
+      root.querySelectorAll('.drop-hover').forEach(el => el.classList.remove('drop-hover'));
+      section.classList.add('drop-hover');
+    }
+  });
+
+  root.addEventListener('dragleave', (e) => {
+    const section = e.target.closest('.bucket-section');
+    if (section && !section.contains(e.relatedTarget)) {
+      section.classList.remove('drop-hover');
+    }
+  });
+
+  root.addEventListener('drop', (e) => {
+    const section = e.target.closest('.bucket-section');
+    if (!section) return;
+    e.preventDefault();
+    section.classList.remove('drop-hover');
+    const id = Number(e.dataTransfer.getData('text/plain'));
+    const bucket = section.getAttribute('data-bucket');
+    if (id && bucket) changeTaskBucket(id, bucket);
+  });
+}
+
+async function changeTaskBucket(taskId, bucket) {
+  const task = lastTasks.find(t => t.id === taskId);
+  if (!task || task.bucket === bucket) return;
+  const prevBucket = task.bucket;
+  task.bucket = bucket;              // optimistic — re-render immediately
+  renderDay();
+  try {
+    await fetchJson(
+      `/api/tasks/${taskId}`,
+      {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({bucket})
+      },
+      'Unable to move task.'
+    );
+    await loadTasks();              // refresh totals/pie and reconcile state
+  } catch {
+    task.bucket = prevBucket;       // revert on failure
+    renderDay();
+    setStatus('taskStatus', 'Could not move the task. Please try again.', true);
+  }
 }
 
 function linkifyText(text) {
@@ -803,7 +882,7 @@ function renderDayTaskHtml(task) {
     const title = deadlineEventTitle(task.text);
     const star = task.importance === 'high' ? ' <span class="star">★</span>' : '';
     const effort = task.effort_min ? `<span class="task-effort">${task.effort_min}m</span>` : '';
-    return `<div class="task-row task-event" data-task-id="${task.id}">
+    return `<div class="task-row task-event" draggable="true" data-task-id="${task.id}">
       <div class="task-row-main">
         <span class="task-row-text">${esc(title)}${star} <span class="event-tag">due today</span></span>
       </div>
@@ -822,7 +901,7 @@ function renderDayTaskHtml(task) {
   const anytime = task._anytime ? ' <span class="anytime">anytime</span>' : '';
   const join = meetingJoinHtml(task);
   const progress = task.progress_pct ? progressBarHtml(task.progress_pct) : '';
-  return `<div class="task-row${doneClass}" data-task-id="${task.id}">
+  return `<div class="task-row${doneClass}" draggable="true" data-task-id="${task.id}">
     <div class="task-row-main">
       <span class="task-row-text">${linkifyText(task.text)}${star}${overdue}${anytime}</span>
       ${join}

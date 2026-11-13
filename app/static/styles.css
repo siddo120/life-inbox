@@ -355,3 +355,17 @@ body.empty-state .raw-notes { display: none; }
   .search-toolbar input, .search-toolbar select { min-width: 0; width: 100%; }
   .search-toolbar label { width: 100%; }
 }
+
+/* Drag-and-drop: move a task between priority buckets */
+.task-row[draggable="true"], .task-event[draggable="true"] { cursor: grab; }
+.task-row.dragging, .task-event.dragging { opacity: 0.4; cursor: grabbing; }
+.bucket-section { border-radius: var(--radius-sm); transition: background 0.12s ease, box-shadow 0.12s ease; }
+.bucket-section.drop-hover {
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+.bucket-empty {
+  padding: 14px; text-align: center; color: var(--muted);
+  font-size: 13px; border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm); margin-top: 4px;
+}
