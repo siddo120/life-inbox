@@ -83,6 +83,9 @@ def gmail_env(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "GOOGLE_CLIENT_SECRET_FILE", str(tmp_path / "client_secret.json")
     )
+    # Ensure the env-based client config doesn't leak in from a real .env.
+    monkeypatch.delenv("GOOGLE_CLIENT_SECRET_JSON", raising=False)
+    monkeypatch.delenv("GMAIL_REDIRECT_URI", raising=False)
 
     # Pop the cached modules AND clear them from the ``app`` package namespace.
     # ``from app import gmail_sync`` returns a stale submodule if only

@@ -961,6 +961,21 @@ def delete_task_from_db(task_id: int) -> bool:
         return True
 
 
+def reset_all_data() -> None:
+    """Delete ALL user content — tasks, their progress/links, inbox items,
+    notes, and analysis runs — for a 'Start New Session'. Preserves the
+    app_settings table (so the Gmail connection/token is kept). Child rows are
+    removed before their parents to satisfy foreign keys."""
+    with SessionLocal() as session:
+        session.execute(delete(TaskProgressRecord))
+        session.execute(delete(TaskSourceItemRecord))
+        session.execute(delete(TaskRecord))
+        session.execute(delete(ItemInsightRecord))
+        session.execute(delete(InboxItemRecord))
+        session.execute(delete(AnalysisRunRecord))
+        session.commit()
+
+
 def set_task_status(task_id: int, task_status: str) -> Optional[dict]:
     if task_status not in TASK_STATUSES:
         raise ValueError("Unsupported task status")

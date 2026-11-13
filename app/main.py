@@ -29,6 +29,7 @@ from app.database import (
     list_items_from_db,
     list_notes_from_db,
     list_tasks_from_db,
+    reset_all_data,
     set_task_progress,
     set_task_status,
     start_analysis_run,
@@ -373,6 +374,21 @@ def delete_task(task_id: int):
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found.")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/api/reset")
+def start_new_session():
+    """Delete all tasks, notes, and inbox items for a fresh start. Keeps the
+    Gmail connection (stored in app_settings)."""
+    try:
+        reset_all_data()
+    except Exception as exc:
+        logger.exception("Failed to reset all data")
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to start a new session. Please try again.",
+        ) from exc
+    return {"ok": True}
 
 
 @app.post("/api/tasks/{task_id}/progress", response_model=Task)

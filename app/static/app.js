@@ -767,6 +767,17 @@ function wireDayDragAndDrop(root) {
   if (root.dataset.dndWired) return;   // delegated listeners survive innerHTML
   root.dataset.dndWired = '1';
 
+  // Click a task tile (but not its action buttons or a link) to open the edit
+  // modal — where you can move it to a specific date or change its priority.
+  root.addEventListener('click', (e) => {
+    if (e.target.closest('.task-hover-actions') || e.target.closest('a')
+        || e.target.closest('button')) return;
+    const row = e.target.closest('.task-row, .task-event');
+    if (!row) return;
+    const id = Number(row.getAttribute('data-task-id'));
+    if (id) openTaskModal(id);
+  });
+
   root.addEventListener('dragstart', (e) => {
     const row = e.target.closest('.task-row, .task-event');
     if (!row) return;
@@ -1190,6 +1201,28 @@ function progressBarHtml(pct) {
 function closeTaskModal() {
   document.getElementById('taskModalBackdrop').hidden = true;
   editingTaskId = null;
+}
+
+async function startNewSession() {
+  const ok = window.confirm(
+    'Start a new session?\n\n'
+    + 'This permanently deletes ALL your current tasks and notes. '
+    + 'Your Gmail connection is kept.'
+  );
+  if (!ok) return;
+  const btn = document.getElementById('newSessionButton');
+  if (btn) btn.disabled = true;
+  setStatus('noteStatus', 'Clearing everything…');
+  try {
+    await fetchJson('/api/reset', {method: 'POST'}, 'Unable to start a new session.');
+    setStatus('noteStatus', 'Fresh session started — everything cleared.');
+    await loadNotes();
+    await loadTasks();
+  } catch {
+    setStatus('noteStatus', 'Could not start a new session. Please try again.', true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function onModalBackdropClick(event) {

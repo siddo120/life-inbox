@@ -369,3 +369,21 @@ body.empty-state .raw-notes { display: none; }
   font-size: 13px; border: 1px dashed var(--border-strong);
   border-radius: var(--radius-sm); margin-top: 4px;
 }
+
+/* Start New Session button (subtle, turns danger-colored on hover) */
+.ghost-danger {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+  font-size: 13px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.ghost-danger:hover { border-color: var(--danger); color: var(--danger); }
+.ghost-danger:disabled { opacity: 0.5; cursor: default; }
+
+/* Task tiles are clickable (open edit modal) — subtle lift on hover */
+.task-row, .task-event { transition: box-shadow 0.12s ease; }
+.task-row:hover, .task-event:hover { box-shadow: 0 1px 6px rgba(0,0,0,0.07); }
